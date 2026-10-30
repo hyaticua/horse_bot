@@ -495,5 +495,60 @@ test("UI builds and refreshes through a whole race", function()
     c.Bob.ns.UI:UpdateTrack()
 end)
 
+test("the track runs the in-game horse models", function()
+    local world, c = setup({ "Alice", "Bob" })
+    world.badDisplays[2402] = true -- lane 2's model fails to load on this "client"
+    local race = host(world, c.Alice, { horses = 6 })
+    bet(world, c.Bob, race.id, 1, 20000)
+    c.Alice.ns.Races:Start(c.Alice.ns.Races:Get(race.id))
+    world:Advance(1) -- Bob's track opens on its own: he has money on this race
+    local track = c.Bob.env.HorseBotTrackFrame
+    truthy(track and track:IsShown(), "track did not open for a bettor")
+    local UI, Horses = c.Bob.ns.UI, c.Bob.ns.Horses
+    local function runner(i) return track.lanes[i].runner end
+    local function x(i) return runner(i)._point[4] end
+    local function loads(i) return Horses.ModelFor(i) ~= 2402 end
+
+    UI:UpdateTrack()
+    for i = 1, 6 do
+        local r = runner(i)
+        eq(r.model._display, Horses.ModelFor(i), "lane " .. i .. " coat")
+        eq(r.model._facing, math.pi / 2, "lane " .. i .. " facing")
+        if loads(i) then eq(r.model._anim, 0, "standing in the gate") end
+    end
+    world:Advance(2.5)
+    UI:UpdateTrack()
+    for i = 1, 6 do
+        eq(runner(i).modelMode, loads(i), "lane " .. i .. " model mode")
+        eq(runner(i).icon:IsShown(), not loads(i), "lane " .. i .. " icon fallback")
+    end
+    truthy(runner(1).modelMode and runner(1).model:IsShown(), "lane 1 lost its model")
+
+    world:Advance(4) -- off and running
+    UI:UpdateTrack()
+    local before = x(1)
+    for i = 1, 6 do
+        if loads(i) then eq(runner(i).model._anim, 5, "lane " .. i .. " running") end
+    end
+    world:Advance(3)
+    UI:UpdateTrack()
+    truthy(x(1) > before, "horse 1 did not move")
+
+    world:Advance(60) -- everyone home and pulled up
+    UI:UpdateTrack()
+    local finishX = track.startX + track.runW
+    for i = 1, 6 do
+        truthy(x(i) >= finishX, "lane " .. i .. " stopped short of the line")
+        if loads(i) then eq(runner(i).model._anim, 0, "lane " .. i .. " pulled up") end
+    end
+
+    -- Icons only, on request.
+    c.Bob.env.SlashCmdList.HORSEBOT("models off")
+    UI:ShowTrack(race.id)
+    UI:UpdateTrack()
+    truthy(not runner(1).modelMode and runner(1).icon:IsShown(), "models off still shows models")
+    eq(track.laneH, 26)
+end)
+
 print(("\n%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

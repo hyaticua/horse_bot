@@ -14,6 +14,7 @@ local DEFAULTS = {
         autoJoin = true,              -- join the shared channel on login
         chatAnnounce = true,          -- print race news to the chat frame
         autoWatch = true,             -- open the track when a race you bet on starts
+        models = true,                -- 3D horse models on the track (icons if off)
         debug = false,
     },
     hostDefaults = {
@@ -155,6 +156,7 @@ local function help()
     ns.Print("  /hb refresh  - ask hosts nearby for their races")
     ns.Print("  /hb scope auto|party|raid|guild|channel  - where new races are broadcast")
     ns.Print("  /hb channel <name>  - shared channel for races outside your group")
+    ns.Print("  /hb models on|off|flip  - 3D horses on the track")
     ns.Print("  /hb autojoin on|off, /hb announce on|off, /hb debug on|off")
 end
 
@@ -196,6 +198,15 @@ SlashCmdList.HORSEBOT = function(input)
     elseif cmd == "announce" then
         s.chatAnnounce = onOff(rest, s.chatAnnounce)
         ns.Print("Chat announcements: " .. (s.chatAnnounce and "on" or "off"))
+    elseif cmd == "models" then
+        if rest == "flip" then
+            -- Escape hatch in case a client renders the runners facing backwards.
+            s.modelFacing = (s.modelFacing or math.pi / 2) == math.pi / 2 and -math.pi / 2 or math.pi / 2
+            ns.Print("Runners now face the other way.")
+        else
+            s.models = onOff(rest, s.models)
+            ns.Print("3D horse models: " .. (s.models and "on" or "off") .. " (applies to the next race you watch)")
+        end
     elseif cmd == "debug" then
         s.debug = onOff(rest, s.debug)
         ns.Print("Debug: " .. (s.debug and "on" or "off"))

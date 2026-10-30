@@ -65,6 +65,15 @@ function Horses.Generate(count, rng)
     return field
 end
 
+-- Creature display IDs of the Classic riding horses, used for the 3D runners
+-- on the track: Brown Horse, Black Stallion, Pinto. Only IDs verified against
+-- the mount tables belong here; a wrong one renders some other creature.
+Horses.MODELS = { 2404, 2402, 2409 }
+
+function Horses.ModelFor(idx)
+    return Horses.MODELS[(idx - 1) % #Horses.MODELS + 1]
+end
+
 function Horses.Color(idx)
     local c = Horses.COLORS[idx] or Horses.COLORS[1]
     return c[1], c[2], c[3]

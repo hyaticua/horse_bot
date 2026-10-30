@@ -18,6 +18,7 @@ Copy the `HorseBot` folder into `World of Warcraft/_classic_era_/Interface/AddOn
 | `/hb refresh` | Ask nearby hosts to resend their open races |
 | `/hb scope auto\|party\|raid\|guild\|channel` | Where new races are broadcast |
 | `/hb channel <name>` | The shared channel used for races outside a group |
+| `/hb models on\|off\|flip` | 3D horse models on the track (`flip` if they ever run backwards) |
 | `/hb autojoin`, `/hb announce`, `/hb debug` | Toggles |
 
 **Hosting:** pick the number of horses (2–8), the distance (5–12 furlongs), the bet limits, an optional house cut, and where to broadcast. Opening betting generates the field and its morning line. Use **Post odds** to put the field in chat for players without the addon. Then **Close bets** and **Start race**. You can cancel (every bet is refunded) or void a single bet at any point before the start.
@@ -63,6 +64,16 @@ The simulation:
 
   The test suite checks that no style or single stat dominates.
 
+### On the track
+
+Runners are the game's own riding-horse models, drawn in `PlayerModel` frames: the Brown Horse, Black Stallion and Pinto coats (display IDs 2404, 2402, 2409), cycled across the lanes.
+- **Animation:** horses stand in the gate during the countdown, use the run animation during the race, and ease past the finish line to a walk and then a halt.
+- **Telling horses apart:** each horse carries a saddle cloth in its lane colour with its number, so the field is easy to read even when coats repeat.
+- **Depth:** model frames are taller than their lanes and nearer lanes draw on top, so the field overlaps as if seen from the stands.
+- **Fallback:** if a model fails to load, that lane falls back to the riding-horse icon, and `/hb models off` uses icons throughout.
+
+Only display IDs verified against the mount tables are used. A wrong ID renders some other creature, so check before adding more coats to `Horses.MODELS`.
+
 ### Odds and payouts
 
 - **Morning line (ML):** a fair price from 250 simulated runs of the actual field.
@@ -91,6 +102,7 @@ The tests run outside the game. `tests/wow_sim.lua` stubs just enough of the WoW
 - the simulation's determinism and balance,
 - pari-mutuel maths,
 - multi-client betting over channel, party and guild,
+- the horse models' coats, facing, animations and icon fallback,
 - late joiners, packet loss and resync,
 - `/reload` mid-race,
 - cancels, voids, trade booking, throttle compliance and spoofed messages,

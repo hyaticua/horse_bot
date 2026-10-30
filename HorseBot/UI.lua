@@ -568,58 +568,140 @@ end
 -- Track
 --------------------------------------------------------------------------------
 
-local TRACK_W, LANE_H, LABEL_W, TRACK_PAD = 660, 26, 132, 34
+-- Runners are drawn with the game's own horse models (PlayerModel frames)
+-- when the client supports it, otherwise with the riding-horse icon. Model
+-- frames are taller than their lane so the horses overlap like a field seen
+-- from the grandstand; nearer lanes are drawn on top.
+local TRACK_W, LABEL_W, FINISH_PAD = 760, 132, 64
+local LANE_H = { model = 36, icon = 26 }
+local MODEL_W, MODEL_H = 72, 54
+local MODEL_CAM_SCALE = 1.0
+local OVERRUN_TICKS = 18           -- pulling up after the line
+local ANIM_STAND, ANIM_WALK, ANIM_RUN = 0, 4, 5
 local track, trackRaceId
 
+local function useModels()
+    return ns.db.settings.models ~= false
+end
+
+local function modelFacing()
+    -- pi/2 turns a model that faces the camera to face right, down the track.
+    return ns.db.settings.modelFacing or math.pi / 2
+end
+
+local function applyPose(r)
+    local m = r.model
+    if m.SetPortraitZoom then m:SetPortraitZoom(0) end
+    if m.SetCamDistanceScale then m:SetCamDistanceScale(MODEL_CAM_SCALE) end
+    if m.SetFacing then m:SetFacing(modelFacing()) end
+    r.anim = nil -- (re)loading a model resets its animation
+end
+
+local function setAnim(r, anim)
+    if r.anim ~= anim and r.model and r.model.SetAnimation then
+        r.model:SetAnimation(anim)
+        r.anim = anim
+    end
+end
+
+local function createRunner(field, i)
+    local r = CreateFrame("Frame", nil, field)
+    r:SetSize(MODEL_W, MODEL_H)
+    r:SetFrameLevel(field:GetFrameLevel() + 2 + i)
+
+    local ok, model = pcall(CreateFrame, "PlayerModel", nil, r)
+    if ok and model and model.SetDisplayInfo then
+        model:SetAllPoints()
+        if model.SetKeepModelOnHide then model:SetKeepModelOnHide(true) end
+        if model.HasScript and model:HasScript("OnModelLoaded") then
+            model:SetScript("OnModelLoaded", function() applyPose(r) end)
+        end
+        r.model = model
+    end
+
+    r.icon = r:CreateTexture(nil, "ARTWORK")
+    r.icon:SetSize(20, 20)
+    r.icon:SetPoint("RIGHT", -2, 0)
+    r.icon:SetTexture(HORSE_ICON)
+    r.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+
+    -- Saddle cloth: lane colour and number, so silks are readable on any coat.
+    r.cloth = r:CreateTexture(nil, "OVERLAY")
+    r.cloth:SetSize(14, 14)
+    r.number = Text(r, "GameFontHighlightSmall", "CENTER")
+    r.number:SetPoint("CENTER", r.cloth, "CENTER", 0, 0)
+    r.number:SetText(i)
+
+    r.place = Text(r, "GameFontNormalSmall")
+    r.place:SetPoint("LEFT", r, "RIGHT", 2, 0)
+    return r
+end
+
+-- Switches a runner between its 3D model and the flat icon.
+local function setRunnerMode(r, lane, modelMode)
+    r.modelMode = modelMode and r.model ~= nil and not r.failed
+    if r.model then r.model:SetShown(r.modelMode) end
+    r.icon:SetShown(not r.modelMode)
+    r.cloth:ClearAllPoints()
+    if r.modelMode then
+        r:SetSize(MODEL_W, MODEL_H)
+        r.cloth:SetPoint("BOTTOMLEFT", r, "BOTTOMLEFT", MODEL_W * 0.42, 6)
+    else
+        r:SetSize(MODEL_W, LANE_H.icon)
+        r.cloth:SetPoint("RIGHT", r.icon, "LEFT", -2, 0)
+    end
+end
+
+local function loadModel(r, displayID)
+    if not r.model then return end
+    if r.displayID ~= displayID then
+        r.displayID = displayID
+        r.failed = nil
+        r.model:SetDisplayInfo(displayID)
+    end
+    applyPose(r)
+    r.loadedAt = GetTime()
+end
+
 function UI:CreateTrack()
-    local lanesH = Horses.MAX * LANE_H
-    track = Window("HorseBotTrackFrame", "", TRACK_W, lanesH + 150)
-    track:SetPoint("TOP", 0, -120)
+    track = Window("HorseBotTrackFrame", "", TRACK_W, 300)
+    track:SetPoint("TOP", 0, -100)
 
     track.field = CreateFrame("Frame", nil, track)
-    track.field:SetPoint("TOPLEFT", 12, -50)
-    track.field:SetSize(TRACK_W - 24, lanesH)
+    track.field:SetPoint("TOPLEFT", 12, -66)
+    track.field:SetSize(TRACK_W - 24, 100)
     local turf = track.field:CreateTexture(nil, "BACKGROUND")
     turf:SetAllPoints()
     turf:SetColorTexture(0.10, 0.22, 0.10, 0.9)
 
-    track.runW = TRACK_W - 24 - LABEL_W - TRACK_PAD
     track.lanes = {}
     for i = 1, Horses.MAX do
         local lane = {}
-        local y = -(i - 1) * LANE_H
         lane.stripe = track.field:CreateTexture(nil, "BORDER")
-        lane.stripe:SetPoint("TOPLEFT", 0, y)
-        lane.stripe:SetSize(TRACK_W - 24, LANE_H)
         lane.stripe:SetColorTexture(1, 1, 1, i % 2 == 0 and 0.03 or 0.07)
         lane.label = Text(track.field, "GameFontHighlightSmall")
-        lane.label:SetPoint("TOPLEFT", 6, y - 7)
         lane.label:SetWidth(LABEL_W - 10)
         lane.label:SetWordWrap(false)
-        lane.silk = track.field:CreateTexture(nil, "ARTWORK")
-        lane.silk:SetSize(24, 24)
-        lane.icon = track.field:CreateTexture(nil, "OVERLAY")
-        lane.icon:SetSize(20, 20)
-        lane.icon:SetTexture(HORSE_ICON)
-        lane.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        lane.icon:SetPoint("CENTER", lane.silk, "CENTER")
-        lane.place = Text(track.field, "GameFontNormalSmall")
-        lane.place:SetPoint("LEFT", lane.silk, "RIGHT", 4, 0)
-        lane.y = y - 1
+        lane.runner = createRunner(track.field, i)
         track.lanes[i] = lane
     end
 
+    track.startLine = track.field:CreateTexture(nil, "ARTWORK")
+    track.startLine:SetWidth(1)
+    track.startLine:SetColorTexture(1, 1, 1, 0.35)
     track.finishLine = track.field:CreateTexture(nil, "ARTWORK")
     track.finishLine:SetWidth(3)
     track.finishLine:SetColorTexture(1, 1, 1, 0.9)
-    track.finishLine:SetPoint("TOP", track.field, "TOPLEFT", LABEL_W + track.runW + 12, 0)
     track.posts = {}
 
     track.header = Text(track, "GameFontNormal")
     track.header:SetPoint("TOPLEFT", 16, -30)
     track.header:SetPoint("RIGHT", -16, 0)
 
-    track.countdown = Text(track.field, "GameFontNormalHuge", "CENTER")
+    track.overlay = CreateFrame("Frame", nil, track.field)
+    track.overlay:SetAllPoints()
+    track.overlay:SetFrameLevel(track.field:GetFrameLevel() + Horses.MAX + 5)
+    track.countdown = Text(track.overlay, "GameFontNormalHuge", "CENTER")
     track.countdown:SetPoint("CENTER")
 
     track.calls = {}
@@ -646,27 +728,53 @@ function UI:ShowTrack(raceId)
         rt.startAt = GetTime() + 2 -- finished long ago: replay it
     end
 
+    local models = useModels()
+    local laneH = models and LANE_H.model or LANE_H.icon
+    local n = race.numHorses
+    local fieldW = TRACK_W - 24
+    track.laneH = laneH
+    -- The horse's nose sits on its position, so the body needs room behind
+    -- the start line; past the finish there is room to pull up.
+    track.startX = LABEL_W + (models and MODEL_W - 14 or 26)
+    track.runW = fieldW - track.startX - FINISH_PAD
+
     track.title:SetText(race.name)
     track.header:SetText(string.format("%d furlongs  |  hosted by %s", race.furlongs, U.ShortName(race.host)))
-    local n = race.numHorses
     for i, lane in ipairs(track.lanes) do
         local h = race.horses[i]
-        local show = h and i <= n
+        local show = h ~= nil and i <= n
+        local y = -(i - 1) * laneH
+        lane.stripe:ClearAllPoints()
+        lane.stripe:SetPoint("TOPLEFT", 0, y)
+        lane.stripe:SetSize(fieldW, laneH)
+        lane.label:ClearAllPoints()
+        lane.label:SetPoint("LEFT", track.field, "TOPLEFT", 6, y - laneH / 2)
         lane.stripe:SetShown(show)
         lane.label:SetShown(show)
-        lane.silk:SetShown(show)
-        lane.icon:SetShown(show)
-        lane.place:SetShown(show)
+        lane.runner:SetShown(show)
         if show then
+            local r = lane.runner
             lane.label:SetText(Horses.ColoredName(h))
-            lane.silk:SetColorTexture(Horses.Color(i))
+            r.cloth:SetColorTexture(Horses.Color(i))
+            if models then loadModel(r, Horses.ModelFor(i)) end
+            setRunnerMode(r, lane, models)
         end
     end
-    track.field:SetHeight(n * LANE_H)
-    track:SetHeight(n * LANE_H + 150)
-    track.finishLine:SetHeight(n * LANE_H)
+    -- Room above the first lane for the tallest model.
+    local top = models and (MODEL_H - laneH) or 0
+    track.field:ClearAllPoints()
+    track.field:SetPoint("TOPLEFT", 12, -50 - top)
+    track.field:SetHeight(n * laneH)
+    track:SetHeight(n * laneH + top + 150)
 
-    -- Furlong posts
+    local function vline(tex, x)
+        tex:ClearAllPoints()
+        tex:SetPoint("TOP", track.field, "TOPLEFT", x, 0)
+        tex:SetHeight(n * laneH)
+        tex:Show()
+    end
+    vline(track.startLine, track.startX)
+    vline(track.finishLine, track.startX + track.runW)
     for _, post in ipairs(track.posts) do post:Hide() end
     for f = 1, race.furlongs - 1 do
         local post = track.posts[f]
@@ -676,10 +784,7 @@ function UI:ShowTrack(raceId)
             post:SetColorTexture(1, 1, 1, 0.15)
             track.posts[f] = post
         end
-        post:ClearAllPoints()
-        post:SetPoint("TOP", track.field, "TOPLEFT", LABEL_W + 12 + track.runW * f / race.furlongs, 0)
-        post:SetHeight(n * LANE_H)
-        post:Show()
+        vline(post, track.startX + track.runW * f / race.furlongs)
     end
     track:Show()
     self:UpdateTrack()
@@ -690,7 +795,8 @@ function UI:UpdateTrack()
     local rt = race and Races:Runtime(race)
     if not rt then return end
     local sim, frames = rt.sim, rt.sim.frames
-    local t = (GetTime() - rt.startAt) / Sim.TICK_SECONDS
+    local now = GetTime()
+    local t = (now - rt.startAt) / Sim.TICK_SECONDS
 
     if t < 0 then
         track.countdown:SetText(math.ceil(-t * Sim.TICK_SECONDS))
@@ -718,15 +824,41 @@ function UI:UpdateTrack()
     local place = {}
     for p, i in ipairs(order) do place[i] = p end
 
+    local laneH = track.laneH
     for i = 1, race.numHorses do
-        local lane = track.lanes[i]
-        local pos = cur[i] + (nxt[i] - cur[i]) * frac
-        local x = LABEL_W + 12 + track.runW * pos / sim.distance - 12
-        lane.silk:ClearAllPoints()
-        lane.silk:SetPoint("TOPLEFT", track.field, "TOPLEFT", x, lane.y)
+        local r = track.lanes[i].runner
+
+        -- A model that never loaded (bad display ID, missing asset) falls
+        -- back to the icon rather than leaving an empty lane.
+        if r.modelMode and r.loadedAt and now - r.loadedAt > 2 and r.model.GetModelFileID
+            and not r.model:GetModelFileID() then
+            r.failed = true
+            setRunnerMode(r, track.lanes[i], false)
+        end
+
+        local finishT = sim.finish[i] and sim.finish[i] / 1000000
+        local x, anim
+        if t < 0 then
+            x, anim = track.startX, ANIM_STAND
+        elseif finishT and t >= finishT then
+            local s = math.min(1, (t - finishT) / OVERRUN_TICKS)
+            x = track.startX + track.runW + (FINISH_PAD - 12) * (1 - (1 - s) ^ 2)
+            anim = (s < 0.6 and ANIM_RUN) or (s < 1 and ANIM_WALK) or ANIM_STAND
+        else
+            local pos = cur[i] + (nxt[i] - cur[i]) * frac
+            x, anim = track.startX + track.runW * pos / sim.distance, ANIM_RUN
+        end
+
+        r:ClearAllPoints()
+        if r.modelMode then
+            r:SetPoint("BOTTOMRIGHT", track.field, "TOPLEFT", x + 8, -i * laneH + 1)
+            setAnim(r, anim)
+        else
+            r:SetPoint("RIGHT", track.field, "TOPLEFT", x, -(i - 0.5) * laneH)
+        end
         local p = place[i]
-        lane.place:SetText(t >= 0 and Sim.Ordinal(p) or "")
-        lane.place:SetTextColor(p == 1 and 1 or 0.8, p == 1 and 0.82 or 0.8, p == 1 and 0 or 0.8)
+        r.place:SetText(t >= 0 and Sim.Ordinal(p) or "")
+        r.place:SetTextColor(p == 1 and 1 or 0.8, p == 1 and 0.82 or 0.8, p == 1 and 0 or 0.8)
     end
 
     -- Commentary: the last three calls up to now.

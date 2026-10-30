@@ -12,7 +12,8 @@ local ADDON_DIR = (arg and arg[0] and arg[0]:match("^(.*)/tests/") or ".") .. "/
 local FILES = { "Util.lua", "Core.lua", "Horses.lua", "Sim.lua", "Ledger.lua", "Comm.lua", "Races.lua", "UI.lua" }
 
 function World.new()
-    return setmetatable({ now = 1000, clients = {}, inflight = {}, timers = {}, sent = {}, latency = 0.05 }, World)
+    return setmetatable({ now = 1000, clients = {}, inflight = {}, timers = {}, sent = {}, latency = 0.05,
+        badDisplays = {} }, World)
 end
 
 --------------------------------------------------------------------------------
@@ -43,11 +44,29 @@ local methods = {
     GetText = function(self) return self._text end,
     CreateTexture = function(self) return newStub(self._client) end,
     CreateFontString = function(self) return newStub(self._client) end,
+    SetPoint = function(self, ...) self._point = { ... } end,
+    ClearAllPoints = function(self) self._point = nil end,
+    GetFrameLevel = function(self) return self._level or 1 end,
+    SetFrameLevel = function(self, level) self._level = level end,
+    -- Model frames
+    HasScript = function(self, name) return self._type == "PlayerModel" and name == "OnModelLoaded" end,
+    SetDisplayInfo = function(self, id)
+        self._display, self._anim, self._facing = id, 0, 0
+        self._fileID = self._client.world.badDisplays[id] == nil and (100000 + id) or nil
+        if self._fileID and self._scripts.OnModelLoaded then self._scripts.OnModelLoaded(self) end
+    end,
+    GetModelFileID = function(self) return self._fileID end,
+    SetAnimation = function(self, anim) self._anim = anim end,
+    SetFacing = function(self, f) self._facing = f end,
 }
 
 StubMT = {
     __index = function(_, k)
-        return methods[k] or function() return nil end
+        if methods[k] then return methods[k] end
+        -- Widget methods are PascalCase; anything else is a field the addon
+        -- never set, which is nil on a real frame too.
+        if type(k) == "string" and k:match("^%u") then return function() return nil end end
+        return nil
     end,
 }
 Stub.new = newStub
@@ -84,8 +103,9 @@ function Client:BuildEnv()
     self.frames = {}
     self.env = env
 
-    env.CreateFrame = function(_, name)
+    env.CreateFrame = function(frameType, name)
         local f = newStub(c)
+        f._type = frameType
         f._shown = true
         c.frames[#c.frames + 1] = f
         if name then env[name] = f end
