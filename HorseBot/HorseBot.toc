@@ -1,0 +1,16 @@
+## Interface: 11509
+## Title: HorseBot
+## Notes: Host horse races and let everyone nearby bet on them. Pari-mutuel odds, synced race replays, and a ledger of who owes whom.
+## Author: hyaticua
+## Version: 0.1.0
+## SavedVariables: HorseBotDB
+## IconTexture: Interface\Icons\Ability_Mount_RidingHorse
+
+Util.lua
+Core.lua
+Horses.lua
+Sim.lua
+Ledger.lua
+Comm.lua
+Races.lua
+UI.lua
