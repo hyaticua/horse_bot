@@ -756,7 +756,7 @@ function UI:ShowTrack(raceId)
             local r = lane.runner
             lane.label:SetText(Horses.ColoredName(h))
             r.cloth:SetColorTexture(Horses.Color(i))
-            if models then loadModel(r, Horses.ModelFor(i)) end
+            if models then loadModel(r, ns.Models:For(h)) end
             setRunnerMode(r, lane, models)
         end
     end
@@ -830,7 +830,7 @@ function UI:UpdateTrack()
 
         -- A model that never loaded (bad display ID, missing asset) falls
         -- back to the icon rather than leaving an empty lane.
-        if r.modelMode and r.loadedAt and now - r.loadedAt > 2 and r.model.GetModelFileID
+        if r.modelMode and ns.Models.canDetectFailure and r.loadedAt and now - r.loadedAt > 2
             and not r.model:GetModelFileID() then
             r.failed = true
             setRunnerMode(r, track.lanes[i], false)

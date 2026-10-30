@@ -15,6 +15,7 @@ local DEFAULTS = {
         chatAnnounce = true,          -- print race news to the chat frame
         autoWatch = true,             -- open the track when a race you bet on starts
         models = true,                -- 3D horse models on the track (icons if off)
+        breed = "mixed",              -- mixed | riding | skeletal
         debug = false,
     },
     hostDefaults = {
@@ -157,6 +158,7 @@ local function help()
     ns.Print("  /hb scope auto|party|raid|guild|channel  - where new races are broadcast")
     ns.Print("  /hb channel <name>  - shared channel for races outside your group")
     ns.Print("  /hb models on|off|flip  - 3D horses on the track")
+    ns.Print("  /hb models mixed|riding|skeletal  - which horses run")
     ns.Print("  /hb autojoin on|off, /hb announce on|off, /hb debug on|off")
 end
 
@@ -203,6 +205,9 @@ SlashCmdList.HORSEBOT = function(input)
             -- Escape hatch in case a client renders the runners facing backwards.
             s.modelFacing = (s.modelFacing or math.pi / 2) == math.pi / 2 and -math.pi / 2 or math.pi / 2
             ns.Print("Runners now face the other way.")
+        elseif ns.Models.MIXES[rest] then
+            s.models, s.breed = true, rest
+            ns.Print("Runners: " .. (rest == "mixed" and "riding and skeletal horses" or rest .. " horses only"))
         else
             s.models = onOff(rest, s.models)
             ns.Print("3D horse models: " .. (s.models and "on" or "off") .. " (applies to the next race you watch)")

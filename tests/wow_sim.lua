@@ -9,11 +9,15 @@ World.__index = World
 
 local ADDON = "HorseBot"
 local ADDON_DIR = (arg and arg[0] and arg[0]:match("^(.*)/tests/") or ".") .. "/HorseBot/"
-local FILES = { "Util.lua", "Core.lua", "Horses.lua", "Sim.lua", "Ledger.lua", "Comm.lua", "Races.lua", "UI.lua" }
+-- Load order comes from the TOC, as in the game.
+local FILES = {}
+for line in io.lines(ADDON_DIR .. "HorseBot.toc") do
+    if line:match("%.lua%s*$") then FILES[#FILES + 1] = line:match("^%s*(.-)%s*$") end
+end
 
 function World.new()
     return setmetatable({ now = 1000, clients = {}, inflight = {}, timers = {}, sent = {}, latency = 0.05,
-        badDisplays = {} }, World)
+        badDisplays = {}, modelFiles = {} }, World)
 end
 
 --------------------------------------------------------------------------------
@@ -51,11 +55,16 @@ local methods = {
     -- Model frames
     HasScript = function(self, name) return self._type == "PlayerModel" and name == "OnModelLoaded" end,
     SetDisplayInfo = function(self, id)
+        local world = self._client.world
         self._display, self._anim, self._facing = id, 0, 0
-        self._fileID = self._client.world.badDisplays[id] == nil and (100000 + id) or nil
+        self._fileID = nil
+        if not world.badDisplays[id] and not world.noFileIds then
+            self._fileID = world.modelFiles[id] or (100000 + id)
+        end
         if self._fileID and self._scripts.OnModelLoaded then self._scripts.OnModelLoaded(self) end
     end,
     GetModelFileID = function(self) return self._fileID end,
+    ClearModel = function(self) self._display, self._fileID = nil, nil end,
     SetAnimation = function(self, anim) self._anim = anim end,
     SetFacing = function(self, f) self._facing = f end,
 }
@@ -309,6 +318,14 @@ function World:Advance(seconds, step)
                 -- Timers die with the session (logout or reload) that made them.
                 if t.client.online and t.client.env == t.env then t.fn() end
                 progressed = true
+            end
+        end
+        -- One rendered frame per step.
+        for _, c in ipairs(self.clients) do
+            if c.online then
+                for _, f in ipairs(c.frames) do
+                    if f._shown and f._scripts.OnUpdate then f._scripts.OnUpdate(f, step) end
+                end
             end
         end
     end

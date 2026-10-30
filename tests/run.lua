@@ -495,55 +495,117 @@ test("UI builds and refreshes through a whole race", function()
     c.Bob.ns.UI:UpdateTrack()
 end)
 
+-- Model files as the fake client reports them: every coat of a breed shares
+-- its breed's file; two of the candidate guesses are wrong.
+local function horseModels(world)
+    for _, id in ipairs({ 2404, 2402, 2409, 2405 }) do world.modelFiles[id] = 500 end
+    for _, id in ipairs({ 5228, 10670, 10671 }) do world.modelFiles[id] = 600 end
+    world.modelFiles[2408] = 777    -- some other creature
+    world.modelFiles[10672] = 500   -- a riding horse, not a skeleton
+    world.badDisplays[2410] = true  -- doesn't exist
+end
+
+local function contains(list, v)
+    for _, x in ipairs(list) do if x == v then return true end end
+    return false
+end
+
+test("candidate coats are checked in the client before use", function()
+    local world = World.new()
+    horseModels(world)
+    local ns = world:AddClient("Alice"):Login().ns
+    eq(table.concat(ns.Models.usable.skeletal, ","), "5228", "before the check only verified IDs")
+    world:Advance(15)
+    eq(table.concat(ns.Models.usable.riding, ","), "2404,2402,2409,2405")
+    eq(table.concat(ns.Models.usable.skeletal, ","), "5228,10670,10671")
+    truthy(ns.Models.canDetectFailure)
+
+    -- Mixed fields use both breeds; a horse always gets the same coat.
+    local seen = {}
+    for _, name in ipairs(ns.Horses.NAMES) do
+        local h = { name = name }
+        local breed = ns.Models:Breed(h)
+        seen[breed] = (seen[breed] or 0) + 1
+        truthy(contains(ns.Models.usable[breed], ns.Models:For(h)), name .. " got a coat outside its breed")
+        eq(ns.Models:For(h), ns.Models:For({ name = name }))
+    end
+    truthy(seen.riding > seen.skeletal and seen.skeletal >= 8, "breed mix " .. tostring(seen.skeletal))
+
+    ns.db.settings.breed = "skeletal"
+    for _, name in ipairs(ns.Horses.NAMES) do
+        truthy(contains(ns.Models.usable.skeletal, ns.Models:For({ name = name })))
+    end
+end)
+
+test("clients that can't report model files keep the verified coats", function()
+    local world = World.new()
+    world.noFileIds = true
+    local ns = world:AddClient("Alice"):Login().ns
+    world:Advance(30)
+    eq(table.concat(ns.Models.usable.riding, ","), "2404,2402,2409")
+    eq(table.concat(ns.Models.usable.skeletal, ","), "5228")
+    eq(ns.Models.canDetectFailure, false)
+end)
+
 test("the track runs the in-game horse models", function()
-    local world, c = setup({ "Alice", "Bob" })
-    world.badDisplays[2402] = true -- lane 2's model fails to load on this "client"
-    local race = host(world, c.Alice, { horses = 6 })
-    bet(world, c.Bob, race.id, 1, 20000)
-    c.Alice.ns.Races:Start(c.Alice.ns.Races:Get(race.id))
+    local world = World.new()
+    horseModels(world)
+    local alice = world:AddClient("Alice"):Login()
+    local bob = world:AddClient("Bob"):Login()
+    world:Advance(15)
+    local race = host(world, alice, { horses = 8 })
+    bet(world, bob, race.id, 1, 20000)
+    local Models = bob.ns.Models
+    local horses = bob.ns.Races:Get(race.id).horses
+    -- One coat fails to load on Bob's machine at race time, after the check.
+    local broken = Models:For(horses[2])
+    world.badDisplays[broken] = true
+    local function loads(i) return Models:For(horses[i]) ~= broken end
+
+    alice.ns.Races:Start(alice.ns.Races:Get(race.id))
     world:Advance(1) -- Bob's track opens on its own: he has money on this race
-    local track = c.Bob.env.HorseBotTrackFrame
+    local track = bob.env.HorseBotTrackFrame
     truthy(track and track:IsShown(), "track did not open for a bettor")
-    local UI, Horses = c.Bob.ns.UI, c.Bob.ns.Horses
+    local UI = bob.ns.UI
     local function runner(i) return track.lanes[i].runner end
     local function x(i) return runner(i)._point[4] end
-    local function loads(i) return Horses.ModelFor(i) ~= 2402 end
 
-    UI:UpdateTrack()
-    for i = 1, 6 do
+    for i = 1, 8 do
         local r = runner(i)
-        eq(r.model._display, Horses.ModelFor(i), "lane " .. i .. " coat")
-        eq(r.model._facing, math.pi / 2, "lane " .. i .. " facing")
-        if loads(i) then eq(r.model._anim, 0, "standing in the gate") end
+        eq(r.model._display, Models:For(horses[i]), "lane " .. i .. " coat")
+        if loads(i) then
+            eq(r.model._facing, math.pi / 2, "lane " .. i .. " facing")
+            eq(r.model._anim, 0, "standing in the gate")
+        end
     end
     world:Advance(2.5)
-    UI:UpdateTrack()
-    for i = 1, 6 do
+    for i = 1, 8 do
         eq(runner(i).modelMode, loads(i), "lane " .. i .. " model mode")
         eq(runner(i).icon:IsShown(), not loads(i), "lane " .. i .. " icon fallback")
     end
-    truthy(runner(1).modelMode and runner(1).model:IsShown(), "lane 1 lost its model")
 
     world:Advance(4) -- off and running
-    UI:UpdateTrack()
     local before = x(1)
-    for i = 1, 6 do
+    for i = 1, 8 do
         if loads(i) then eq(runner(i).model._anim, 5, "lane " .. i .. " running") end
     end
     world:Advance(3)
-    UI:UpdateTrack()
     truthy(x(1) > before, "horse 1 did not move")
 
     world:Advance(60) -- everyone home and pulled up
-    UI:UpdateTrack()
     local finishX = track.startX + track.runW
-    for i = 1, 6 do
+    for i = 1, 8 do
         truthy(x(i) >= finishX, "lane " .. i .. " stopped short of the line")
         if loads(i) then eq(runner(i).model._anim, 0, "lane " .. i .. " pulled up") end
     end
 
-    -- Icons only, on request.
-    c.Bob.env.SlashCmdList.HORSEBOT("models off")
+    -- An all-skeleton field, then icons only, on request.
+    bob.env.SlashCmdList.HORSEBOT("models skeletal")
+    UI:ShowTrack(race.id)
+    for i = 1, 8 do
+        truthy(contains(Models.usable.skeletal, runner(i).model._display), "lane " .. i .. " is not skeletal")
+    end
+    bob.env.SlashCmdList.HORSEBOT("models off")
     UI:ShowTrack(race.id)
     UI:UpdateTrack()
     truthy(not runner(1).modelMode and runner(1).icon:IsShown(), "models off still shows models")
