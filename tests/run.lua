@@ -1,19 +1,13 @@
--- Offline test suite. Run from the repository root:  lua5.1 tests/run.lua
+-- Offline test suite. Run from the repository root:
+--   lua5.1 tests/run.lua            both clients
+--   lua5.1 tests/run.lua forever    one client (classic | forever)
 package.path = (arg[0]:match("^(.*)/[^/]+$") or ".") .. "/?.lua;" .. package.path
 local World = require("wow_sim")
 
-math.randomseed(12345)
-
-local passed, failed = 0, 0
-local function test(name, fn)
-    local ok, err = xpcall(fn, debug.traceback)
-    if ok then
-        passed = passed + 1
-        print("ok    " .. name)
-    else
-        failed = failed + 1
-        print("FAIL  " .. name .. "\n" .. tostring(err))
-    end
+local tests = {}
+-- Every test runs against each client unless `flavor` limits it to one.
+local function test(name, fn, flavor)
+    tests[#tests + 1] = { name = name, fn = fn, flavor = flavor }
 end
 
 local function eq(a, b, msg)
@@ -611,6 +605,151 @@ test("the track runs the in-game horse models", function()
     truthy(not runner(1).modelMode and runner(1).icon:IsShown(), "models off still shows models")
     eq(track.laneH, 26)
 end)
+
+--------------------------------------------------------------------------------
+-- WoW Forever (mainline client) specifics
+--------------------------------------------------------------------------------
+
+test("the chat lockdown holds messages and refuses actions until it lifts", function()
+    local world, c = setup()
+    local alice, bob, carol = c.Alice, c.Bob, c.Carol
+    local race = host(world, alice)
+
+    -- Bob is in a boss fight: he can't bet, and nothing is attempted.
+    bob.lockdown = true
+    local ok, err = bob.ns.Races:PlaceBet(bob.ns.Races:Get(race.id), 1, 20000)
+    eq(ok, nil); truthy(err:find("locked"), err)
+    bob.lockdown = false
+
+    -- The host is locked down: no new races, no starting, but bets that
+    -- arrive are taken and broadcast once the lockdown ends.
+    alice.lockdown = true
+    local r2, err2 = alice.ns.Races:Create({ horses = 4, furlongs = 5, minBet = 1, maxBet = 100000, cut = 0, scope = "CHANNEL" })
+    eq(r2, nil); truthy(err2:find("locked"))
+    local started, err3 = alice.ns.Races:Start(alice.ns.Races:Get(race.id))
+    eq(started, nil); truthy(err3:find("locked"))
+    eq(alice.ns.Races:Get(race.id).state, "OPEN")
+    bet(world, bob, race.id, 2, 30000)
+    world:Advance(10)
+    eq(alice.ns.Races:Get(race.id).betSeq, 1, "host took the bet")
+    eq(carol.ns.Races:Get(race.id).betSeq, 0, "broadcast went out during the lockdown")
+    eq(world.lockdownRefusals, nil, "the addon tried to send during the lockdown")
+
+    alice.lockdown = false
+    world:Advance(3)
+    eq(carol.ns.Races:Totals(carol.ns.Races:Get(race.id)), 30000)
+    truthy(bob:Printed("Bet accepted"), "Bob never heard back")
+end, "forever")
+
+test("a lockdown the client reports late loses no messages", function()
+    local world, c = setup({ "Alice", "Bob" })
+    local race = host(world, c.Alice)
+    c.Alice.silentLockdown = true -- sends are refused before InChatMessagingLockdown says so
+    bet(world, c.Bob, race.id, 1, 20000)
+    world:Advance(5)
+    truthy((world.lockdownRefusals or 0) > 0)
+    eq(next(c.Bob.ns.Races:Get(race.id).bets), nil)
+    c.Alice.silentLockdown = false
+    world:Advance(3)
+    eq(c.Bob.ns.Races:Get(race.id).betSeq, 1)
+end, "forever")
+
+test("logging in during a lockdown joins the channel afterwards", function()
+    local world, c = setup({ "Alice" })
+    local race = host(world, c.Alice)
+    local dana = world:AddClient("Dana")
+    dana.lockdown = true
+    dana:Login()
+    world:Advance(20) -- JoinTemporaryChannel asserts if it is called now
+    eq(dana.ns.Comm:ChannelId(), nil)
+    dana.lockdown = false
+    world:Advance(15)
+    truthy(dana.ns.Comm:ChannelId(), "never joined")
+    truthy(dana.ns.Races:Get(race.id), "never discovered the race")
+end, "forever")
+
+test("betting with an offline host fails at once", function()
+    local world, c = setup({ "Alice", "Bob" })
+    local race = host(world, c.Alice)
+    c.Alice:Logout()
+    local ok = c.Bob.ns.Races:PlaceBet(c.Bob.ns.Races:Get(race.id), 1, 20000)
+    truthy(ok)
+    world:Advance(1)
+    truthy(c.Bob:Printed("Alice is offline"), "Bob was not told the host is offline")
+    eq(next(c.Bob.ns.Races.pending), nil)
+    eq(c.Bob.ns.Ledger:Get(c.Alice.full), 0)
+end, "forever")
+
+test("addon messages carrying secret values are ignored", function()
+    local world, c = setup({ "Alice", "Bob" })
+    local race = host(world, c.Alice)
+    local Comm = c.Bob.ns.Comm
+    Comm:OnAddonMessage("HorseBot", "1^S^" .. race.id .. "^CANCELLED^0", "CHANNEL", World.SECRET)
+    Comm:OnAddonMessage("HorseBot", World.SECRET, "CHANNEL", c.Alice.full)
+    eq(c.Bob.ns.Races:Get(race.id).state, "OPEN")
+end, "forever")
+
+test("starter accounts are warned that they may not be able to send", function()
+    local world = World.new()
+    local t = world:AddClient("Newbie")
+    t.trial = true
+    t:Login()
+    world:Advance(15)
+    truthy(t:Printed("Starter and Veteran accounts"))
+end, "forever")
+
+test("races in an instance group use instance chat", function()
+    local world = World.new()
+    local alice = world:AddClient("Alice"):Login()
+    local bob = world:AddClient("Bob"):Login()
+    alice.instanceGroup, bob.instanceGroup = 7, 7
+    local stranger = world:AddClient("Stranger"):Login()
+    world:Advance(15)
+    local race = host(world, alice, { scope = "AUTO" })
+    truthy(bob.ns.Races:Get(race.id), "instance groupmate missed the race")
+    eq(stranger.ns.Races:Get(race.id), nil)
+    bet(world, bob, race.id, 1, 10000)
+    eq(alice.ns.Races:Get(race.id).betSeq, 1)
+end, "forever")
+
+test("posting odds respects the lockdown; cancel works without popups", function()
+    local world = World.new()
+    world.noPopups = true
+    local alice = world:AddClient("Alice"):Login()
+    world:Advance(15)
+    local race = host(world, alice)
+    alice.ns.UI:Show(race.id)
+    alice.lockdown = true
+    alice.ns.UI:PostOdds(race) -- would assert if it chatted
+    eq(alice.chat, nil)
+    alice.lockdown = false
+    alice.ns.UI:PostOdds(race)
+    truthy(#alice.chat >= 2)
+
+    local cancel = alice.env.HorseBotFrame.cancelBtn
+    cancel._scripts.OnClick(cancel)
+    eq(alice.ns.Races:Get(race.id).state, "OPEN", "one click must not cancel")
+    cancel._scripts.OnClick(cancel)
+    eq(alice.ns.Races:Get(race.id).state, "CANCELLED")
+end, "forever")
+
+local passed, failed = 0, 0
+for _, flavor in ipairs(arg[1] and { arg[1] } or { "classic", "forever" }) do
+    World.flavor = flavor
+    math.randomseed(12345)
+    for _, t in ipairs(tests) do
+        if not t.flavor or t.flavor == flavor then
+            local ok, err = xpcall(t.fn, debug.traceback)
+            if ok then
+                passed = passed + 1
+                print(("ok    [%s] %s"):format(flavor, t.name))
+            else
+                failed = failed + 1
+                print(("FAIL  [%s] %s\n%s"):format(flavor, t.name, tostring(err)))
+            end
+        end
+    end
+end
 
 print(("\n%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

@@ -97,8 +97,9 @@ local eventHandlers = {}
 
 function ns.RegisterEvent(event, fn)
     if not eventHandlers[event] then
+        -- Events differ between clients; registering an unknown one errors.
+        if not pcall(eventFrame.RegisterEvent, eventFrame, event) then return end
         eventHandlers[event] = {}
-        eventFrame:RegisterEvent(event)
     end
     table.insert(eventHandlers[event], fn)
 end

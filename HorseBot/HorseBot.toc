@@ -1,4 +1,4 @@
-## Interface: 11509
+## Interface: 16001, 11509
 ## Title: HorseBot
 ## Notes: Host horse races and let everyone nearby bet on them. Pari-mutuel odds, synced race replays, and a ledger of who owes whom.
 ## Author: hyaticua

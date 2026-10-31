@@ -15,10 +15,24 @@ for line in io.lines(ADDON_DIR .. "HorseBot.toc") do
     if line:match("%.lua%s*$") then FILES[#FILES + 1] = line:match("^%s*(.-)%s*$") end
 end
 
+-- Which client to imitate:
+--   "classic"  Classic Era 1.15 (boolean-era API, global SendChatMessage)
+--   "forever"  WoW Forever, built on the mainline (Midnight) client: chat
+--              lockdown, secret values, newer send results, C_ChatInfo chat
+World.flavor = "classic"
+
+local RESULTS = {
+    classic = { Success = 0, AddonMessageThrottle = 3 },
+    forever = { Success = 0, AddonMessageThrottle = 3, AddOnMessageLockdown = 11, TargetOffline = 12 },
+}
+
 function World.new()
     return setmetatable({ now = 1000, clients = {}, inflight = {}, timers = {}, sent = {}, latency = 0.05,
-        badDisplays = {}, modelFiles = {} }, World)
+        badDisplays = {}, modelFiles = {}, flavor = World.flavor }, World)
 end
+
+-- A value the forever client treats as secret.
+World.SECRET = setmetatable({}, { __tostring = function() return "<secret>" end })
 
 --------------------------------------------------------------------------------
 -- Frames: every method exists; unknown ones do nothing and return a stub
@@ -138,7 +152,16 @@ function Client:BuildEnv()
     env.NUM_CHAT_WINDOWS = 10
     env.ChatFrame_RemoveChannel = function() end
     env.geterrorhandler = function() return function(err) error(err, 0) end end
-    env.Enum = { SendAddonMessageResult = { Success = 0, AddonMessageThrottle = 3 } }
+    local forever = world.flavor == "forever"
+    env.Enum = { SendAddonMessageResult = RESULTS[world.flavor] }
+    if forever then
+        env.issecretvalue = function(v) return v == World.SECRET end
+        env.IsTrialAccount = function() return c.trial == true end
+        env.IsVeteranTrialAccount = function() return false end
+        env.LE_PARTY_CATEGORY_HOME, env.LE_PARTY_CATEGORY_INSTANCE = 1, 2
+        env.ChatFrame_RemoveChannel = nil
+        if world.noPopups then env.StaticPopup_Show, env.StaticPopupDialogs = nil, nil end
+    end
 
     env.GetTime = function() return world.now end
     env.time = function() return 1700000000 + math.floor(world.now) end
@@ -148,7 +171,11 @@ function Client:BuildEnv()
     end
     env.GetNormalizedRealmName = function() return c.realm end
     env.Ambiguate = function(n) return (n:match("^[^-]+")) end
-    env.IsInGroup = function() return c.group ~= nil end
+    env.IsInGroup = function(category)
+        if category == 2 then return c.instanceGroup ~= nil end
+        if category == 1 then return c.group ~= nil end
+        return c.group ~= nil or c.instanceGroup ~= nil
+    end
     env.IsInRaid = function() return false end
     env.IsInGuild = function() return c.guild ~= nil end
     env.GetChannelName = function(name)
@@ -156,14 +183,17 @@ function Client:BuildEnv()
         return id or 0, id and name or nil
     end
     env.JoinTemporaryChannel = function(name)
+        assert(not (forever and c.lockdown), "channel API used during lockdown")
         c.channels[name:lower()] = 5
     end
     env.LeaveChannelByName = function(name) c.channels[name:lower()] = nil end
-    env.SendChatMessage = function(msg, chatType)
+    local function sendChat(msg, chatType)
         assert(#msg <= 255, "chat line too long")
+        assert(not (forever and c.lockdown), "chat sent during lockdown")
         c.chat = c.chat or {}
         c.chat[#c.chat + 1] = { msg = msg, chatType = chatType }
     end
+    if not forever then env.SendChatMessage = sendChat end
     env.GetTargetTradeMoney = function() return c.tradeTheirs or 0 end
     env.GetPlayerTradeMoney = function() return c.tradeMine or 0 end
 
@@ -184,9 +214,17 @@ function Client:BuildEnv()
     env.C_ChatInfo = {
         RegisterAddonMessagePrefix = function(p) c.prefix = p; return true end,
         SendAddonMessage = function(prefix, text, chatType, target)
+            if forever and (c.lockdown or c.silentLockdown) then
+                world.lockdownRefusals = (world.lockdownRefusals or 0) + 1
+                return RESULTS.forever.AddOnMessageLockdown
+            end
             return world:Send(c, prefix, text, chatType, target)
         end,
     }
+    if forever then
+        env.C_ChatInfo.InChatMessagingLockdown = function() return c.lockdown == true end
+        env.C_ChatInfo.SendChatMessage = sendChat
+    end
     return env
 end
 
@@ -253,7 +291,7 @@ function World:AddTimer(client, delay, fn)
     self.timers[#self.timers + 1] = { at = self.now + delay, fn = fn, client = client, env = client.env }
 end
 
-local VALID = { PARTY = true, RAID = true, GUILD = true, WHISPER = true, CHANNEL = true }
+local VALID = { PARTY = true, RAID = true, INSTANCE_CHAT = true, GUILD = true, WHISPER = true, CHANNEL = true }
 
 function World:Send(c, prefix, text, chatType, target)
     assert(prefix == c.prefix, "prefix not registered")
@@ -264,7 +302,11 @@ function World:Send(c, prefix, text, chatType, target)
     local recipients = {}
     if chatType == "WHISPER" then
         local to = self:Find(target)
-        if to then recipients[1] = to end
+        if to then
+            recipients[1] = to
+        elseif self.flavor == "forever" then
+            return RESULTS.forever.TargetOffline
+        end
     else
         local channelName
         if chatType == "CHANNEL" then
@@ -274,6 +316,7 @@ function World:Send(c, prefix, text, chatType, target)
         for _, other in ipairs(self.clients) do
             if other.online then
                 local hit = (chatType == "PARTY" or chatType == "RAID") and c.group and other.group == c.group
+                    or chatType == "INSTANCE_CHAT" and c.instanceGroup and other.instanceGroup == c.instanceGroup
                     or chatType == "GUILD" and c.guild and other.guild == c.guild
                     or chatType == "CHANNEL" and other.channels[channelName] ~= nil
                 if hit then recipients[#recipients + 1] = other end

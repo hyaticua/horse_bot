@@ -266,6 +266,7 @@ end
 --------------------------------------------------------------------------------
 
 function Races:Create(opts)
+    if Comm:Locked() then return nil, Comm.LOCKED_MSG end
     local scope = opts.scope or ns.db.settings.scope
     local chatType, err = Comm:Resolve(scope)
     if not chatType then return nil, "Cannot broadcast: " .. err end
@@ -344,6 +345,8 @@ function Races:Close(race)
 end
 
 function Races:Start(race)
+    -- Players would never see the start; keep the field waiting instead.
+    if Comm:Locked() then return nil, Comm.LOCKED_MSG end
     if race.state == OPEN then self:Close(race) end
     if race.state ~= CLOSED then return end
     race.seed = U.RandomSeed()
@@ -351,6 +354,7 @@ function Races:Start(race)
     self:Broadcast(race, "S", race.id, RUNNING, race.seed)
     self:BeginRun(race, Races.COUNTDOWN)
     ns.Fire("RACES_CHANGED", race.id)
+    return true
 end
 
 function Races:Cancel(race)
@@ -411,8 +415,15 @@ function Races:PlaceBet(race, horse, amount)
         return true
     end
 
+    if Comm:Locked() then return nil, Comm.LOCKED_MSG end
     self.pending[nonce] = { id = race.id, horse = horse, amount = amount }
-    Comm:Enqueue(Comm:Encode("B", race.id, horse, amount, nonce), "WHISPER", race.host)
+    Comm:Enqueue(Comm:Encode("B", race.id, horse, amount, nonce), "WHISPER", race.host, function(reason)
+        if not self.pending[nonce] then return end
+        self.pending[nonce] = nil
+        ns.Status(reason == "offline"
+            and (U.ShortName(race.host) .. " is offline - your bet was not placed.")
+            or "Your client refused to send the bet - it was not placed.")
+    end)
     C_Timer.After(BET_TIMEOUT, function()
         if self.pending[nonce] then
             self.pending[nonce] = nil

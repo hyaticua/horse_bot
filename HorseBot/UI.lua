@@ -222,7 +222,9 @@ function UI:CreateMain()
     main.closeBtn:SetPoint("LEFT", 0, 0)
     main.startBtn = Button(main.hostBar, "Start race", 96, function()
         local race = selectedRace()
-        if race then Races:Start(race) end
+        if not race then return end
+        local ok, err = Races:Start(race)
+        if not ok and err then ns.Status(err) end
     end)
     main.startBtn:SetPoint("LEFT", main.closeBtn, "RIGHT", 4, 0)
     main.shoutBtn = Button(main.hostBar, "Post odds", 96, function()
@@ -232,7 +234,16 @@ function UI:CreateMain()
     main.shoutBtn:SetPoint("LEFT", main.startBtn, "RIGHT", 4, 0)
     main.cancelBtn = Button(main.hostBar, "Cancel", 96, function()
         local race = selectedRace()
-        if race then StaticPopup_Show("HORSEBOT_CANCEL_RACE", race.name, nil, race.id) end
+        if not race then return end
+        if StaticPopup_Show and StaticPopupDialogs then
+            StaticPopup_Show("HORSEBOT_CANCEL_RACE", race.name, nil, race.id)
+        elseif main.cancelArmed == race.id and GetTime() - main.cancelArmedAt < 4 then
+            Races:Cancel(race)
+        else
+            -- No popup API on this client: confirm with a second click.
+            main.cancelArmed, main.cancelArmedAt = race.id, GetTime()
+            ns.Status("Click Cancel again to cancel '" .. race.name .. "' and refund every bet.")
+        end
     end)
     main.cancelBtn:SetPoint("LEFT", main.shoutBtn, "RIGHT", 4, 0)
 
@@ -405,7 +416,11 @@ end
 -- Human-readable odds for players without the addon. Called from a click, so
 -- the hardware-event restriction on public chat is satisfied.
 function UI:PostOdds(race)
-    local chatType = IsInRaid() and "RAID" or IsInGroup() and "PARTY" or "SAY"
+    if ns.Comm:Locked() then return ns.Status(ns.Comm.LOCKED_MSG) end
+    -- Mainline moved SendChatMessage into C_ChatInfo.
+    local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
+    local chatType = (ns.Comm:Resolve("PARTY")) or "SAY"
+    local function SendChatMessage(msg, kind) send(msg, kind) end
     local head = string.format("[HorseBot] %s - %df - bets %s to %s. Odds:", race.name, race.furlongs,
         U.FormatMoney(race.minBet, true), U.FormatMoney(race.maxBet, true))
     SendChatMessage(head, chatType)
@@ -423,7 +438,7 @@ function UI:PostOdds(race)
     if line ~= "" then SendChatMessage(line, chatType) end
 end
 
-StaticPopupDialogs["HORSEBOT_CANCEL_RACE"] = {
+if StaticPopupDialogs then StaticPopupDialogs["HORSEBOT_CANCEL_RACE"] = {
     text = "Cancel '%s'? Every bet is refunded.",
     button1 = YES,
     button2 = NO,
@@ -434,7 +449,7 @@ StaticPopupDialogs["HORSEBOT_CANCEL_RACE"] = {
     timeout = 0,
     whileDead = true,
     hideOnEscape = true,
-}
+} end
 
 --------------------------------------------------------------------------------
 -- Host panel
